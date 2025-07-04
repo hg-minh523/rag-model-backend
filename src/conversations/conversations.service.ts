@@ -76,6 +76,7 @@ export class ConversationsService {
       const conversationUpsert = await this.conversationRepository.upsert(
         {
           ...createConversationDto,
+          // BUG: fill createdAt and updatedAt with the current date if not provided
           updatedAt: createConversationDto.conversation.timestamp || new Date(),
           channel: {
             id: createConversationDto.channelId,
@@ -287,10 +288,12 @@ export class ConversationsService {
         .leftJoinAndSelect('conversation.channel', 'channel')
         .leftJoinAndSelect('conversation.tags', 'tags')
         .leftJoinAndSelect('members.lastMessage', 'lastMessage')
+
         .where('channel.shop_id = :shopId', {
           shopId: queryParams.shopId,
         })
-        .orderBy('conversation.updated_at', 'DESC');
+        // .limit(20)
+        .orderBy('lastMessage.createdAt', 'DESC');
 
       if (queryParams.channelType) {
         queryBuilder.andWhere('channel.type = :channelType', {
@@ -338,7 +341,11 @@ export class ConversationsService {
           'EXISTS (SELECT 1 FROM conversation_members cm JOIN customers c ON cm.customer_id = c.id WHERE cm.conversation_id = conversation.id AND c.phone IS NOT NULL)',
         );
       }
-      const conversations = await queryBuilder.getMany();
+      // queryBuilder.limit(queryParams.limit || 20);
+      // queryBuilder.offset(0);
+      const conversations = await queryBuilder
+        .orderBy('conversation.createdAt', 'DESC')
+        .getMany();
 
       const conversationWithUnreadCount = await Promise.all(
         conversations.map(async (conv) => {
@@ -545,7 +552,7 @@ export class ConversationsService {
         type: ConversationType.DIRECT,
         avatar: customer.avatar,
         isBot: checkedChannelActiveAgent && checkConversationActive,
-        externalId: customer.externalId,
+        externalId: externalConversation?.id,
         channelId: channel.id,
         conversation: {
           id: externalConversation?.id || '',
@@ -689,7 +696,7 @@ export class ConversationsService {
         name: customer.name || 'Unknown Customer',
         type: ConversationType.DIRECT,
         avatar: customer.avatar || '',
-        externalId: customer.externalId,
+        externalId: externalConversationId,
         channelId: channel.id,
         customerParticipantIds: [customer.id],
         userParticipantIds: adminChannels.map((user) => user.id),

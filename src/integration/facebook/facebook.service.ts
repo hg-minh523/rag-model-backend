@@ -21,11 +21,9 @@ import { FacebookWebhookDTO } from './dto/facebook-webhook.dto';
 import { TUserProfile } from './types/user.type';
 import { ChatService } from 'src/chat/chat.service';
 import { HttpMethod } from 'src/common/enums/http-method.enum';
-import { TFacebookConversation } from './types/conversation.type';
 import { ConversationsService } from 'src/conversations/conversations.service';
 import { CustomersService } from 'src/customers/customers.service';
 import { Platform } from 'src/customers/customers.dto';
-import { MessagesService } from 'src/messages/messages.service';
 import dayjs from 'dayjs';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -43,7 +41,6 @@ export class FacebookService {
     private readonly facebookTokenService: FacebookTokenService,
     private readonly conversationService: ConversationsService,
     private readonly customerService: CustomersService,
-    private readonly messagesService: MessagesService,
     @InjectQueue(process.env.REDIS_FACEBOOK_SYNC_TOPIC)
     private readonly facebookSyncQueue: Queue,
   ) {}
@@ -219,6 +216,10 @@ export class FacebookService {
         if (event.message?.text) {
           await this.chatService.sendMessagesFacebookToPlatform(event);
         }
+
+        // if (event.read) {
+        //   await this.chatService.handleMessageReadFacebook(event);
+        // }
       }
     }
   }
@@ -275,26 +276,6 @@ export class FacebookService {
       return response.data;
     } catch (error) {
       throw new Error(`${error.message || error}`);
-    }
-  }
-
-  fetchConversationWithinCustomer() {
-    // cónt befỏe3month
-    while (true) {
-      //callapi lay id cua conv -> theo limit 100 va after
-      // loop convs kiem tra update_timed create time < thoi gian 3 thang
-      //if true -> gui queue face-sync sync-facebook-conversations
-      // false break;
-    }
-  }
-
-  fetchMessageWithFbConvId(convId, channelId) {
-    // cónt befỏe3month
-    while (true) {
-      //callapi lay id cua conv -> theo limit 100 va after
-      // loop convs kiem tra update_timed create time < thoi gian 3 thang
-      //if true -> gui queue face-sync sync-facebook-conversations
-      // false break;
     }
   }
 
@@ -414,7 +395,6 @@ export class FacebookService {
         100,
       );
 
-      // if (!messages || messages.length === 0) break;
       const userMessages = messages.filter((msg) => msg.from.id !== pageId);
 
       let customer: Customer | null = null;
@@ -433,18 +413,33 @@ export class FacebookService {
         );
       }
 
-      for (const msg of userMessages.reverse()) {
-        await this.conversationService.sendMessageToConversation({
-          externalMessageId: msg.id,
-          channel: facebookChannel,
-          customer: customer,
-          message: msg.message,
-          externalConversation: {
-            id: conversationId,
-            timestamp: msg.created_time,
-          },
-          type: 'text',
-        });
+      for (const msg of messages.reverse()) {
+        const isFromUser = msg.from.id !== pageId;
+
+        if (isFromUser) {
+          await this.conversationService.sendMessageToConversation({
+            externalMessageId: msg.id,
+            channel: facebookChannel,
+            customer: customer,
+            message: msg.message,
+            externalConversation: {
+              id: conversationId,
+              timestamp: msg.created_time,
+            },
+            type: 'text',
+          });
+        } else {
+          await this.conversationService.sendMessageToConversationWithOthers({
+            channel: facebookChannel,
+            message: {
+              type: 'text',
+              message: msg.message,
+              message_id: msg.id,
+            },
+            customer: customer,
+            externalConversationId: conversationId,
+          });
+        }
       }
     } catch (error) {
       throw new Error(`Failed to sync conversations: ${error.message}`);
@@ -481,12 +476,8 @@ export class FacebookService {
 
       for (let i = 0; i < conversations.length; i++) {
         const conversation = conversations[i];
-        const isWithinCustomTime = isAfter(
-          new Date(conversation.updated_time).getTime(),
-          within,
-          type,
-          true,
-        );
+        const ms = new Date(conversation.updated_time).getTime();
+        const isWithinCustomTime = isAfter(ms, within, type, true);
 
         if (!isWithinCustomTime) {
           shouldBreak = true;
@@ -498,11 +489,6 @@ export class FacebookService {
           data: {
             pageId: pageId,
             conversationId: conversation.id,
-          },
-          opts: {
-            jobId: `${conversation.id}-${pageId}`,
-            removeOnComplete: true,
-            removeOnFail: true,
           },
         });
       }
